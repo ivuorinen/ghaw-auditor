@@ -1,0 +1,33 @@
+---
+name: 'Composite Action'
+description: 'A composite action example'
+author: 'Test Author'
+
+inputs:
+  message:
+    description: 'Message to display'
+    required: true
+  debug:
+    description: 'Enable debug mode'
+    required: false
+    default: 'false'
+
+outputs:
+  result:
+    description: 'Action result'
+    value: ${{ steps.output.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    - name: Display message
+      run: echo "${{ inputs.message }}"
+      shell: bash
+    - name: Set output
+      id: output
+      run: echo "result=success" >> $GITHUB_OUTPUT
+      shell: bash
+
+branding:
+  icon: 'check'
+  color: 'green'

@@ -1,0 +1,21 @@
+---
+name: 'Docker Action'
+description: 'A Docker action example'
+
+inputs:
+  dockerfile:
+    description: 'Path to Dockerfile'
+    required: false
+    default: 'Dockerfile'
+
+outputs:
+  image-id:
+    description: 'Built image ID'
+
+runs:
+  using: docker
+  image: Dockerfile
+  args:
+    - ${{ inputs.dockerfile }}
+  env:
+    BUILD_ENV: production

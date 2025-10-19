@@ -1,0 +1,23 @@
+---
+name: 'Action with Various Defaults'
+description: 'Tests different input default types'
+
+inputs:
+  string-input:
+    description: 'String input'
+    default: 'hello'
+  boolean-input:
+    description: 'Boolean input'
+    default: true
+  number-input:
+    description: 'Number input'
+    default: 42
+  no-default:
+    description: 'Input without default'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - run: echo "test"
+      shell: bash

@@ -1,0 +1,39 @@
+---
+name: Reusable Workflow
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: string
+      debug:
+        description: 'Enable debug mode'
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      deployment-id:
+        description: 'Deployment ID'
+        value: ${{ jobs.deploy.outputs.id }}
+    secrets:
+      deploy-token:
+        description: 'Deployment token'
+        required: true
+      api-key:
+        required: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.deploy.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy
+        id: deploy
+        run: echo "id=12345" >> $GITHUB_OUTPUT
+        env:
+          TOKEN: ${{ secrets.deploy-token }}
+          API_KEY: ${{ secrets.api-key }}

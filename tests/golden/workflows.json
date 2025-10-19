@@ -1,0 +1,41 @@
+{
+  "test.yml": {
+    "name": "Test Workflow",
+    "path": "test.yml",
+    "triggers": [
+      "push",
+      "pull_request"
+    ],
+    "permissions": null,
+    "concurrency": null,
+    "env": {},
+    "defaults": {},
+    "jobs": {
+      "test": {
+        "name": "test",
+        "runs_on": "ubuntu-latest",
+        "needs": [],
+        "if_condition": null,
+        "permissions": null,
+        "environment": null,
+        "concurrency": null,
+        "timeout_minutes": null,
+        "continue_on_error": false,
+        "container": null,
+        "services": {},
+        "strategy": null,
+        "actions_used": [],
+        "secrets_used": [
+          "GITHUB_TOKEN"
+        ],
+        "env_vars": {}
+      }
+    },
+    "is_reusable": false,
+    "reusable_contract": null,
+    "secrets_used": [
+      "GITHUB_TOKEN"
+    ],
+    "actions_used": []
+  }
+}

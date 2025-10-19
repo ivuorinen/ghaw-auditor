@@ -1,0 +1,30 @@
+{
+  "actions/checkout@abc123": {
+    "name": "Checkout",
+    "description": "Checkout a Git repository",
+    "author": "GitHub",
+    "inputs": {
+      "repository": {
+        "name": "repository",
+        "description": "Repository name with owner",
+        "required": false,
+        "default": null
+      },
+      "ref": {
+        "name": "ref",
+        "description": "The branch, tag or SHA to checkout",
+        "required": false,
+        "default": null
+      }
+    },
+    "outputs": {},
+    "runs": {
+      "using": "node20",
+      "main": "dist/index.js"
+    },
+    "branding": null,
+    "is_composite": false,
+    "is_docker": false,
+    "is_javascript": true
+  }
+}

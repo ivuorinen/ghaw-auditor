@@ -1,0 +1,26 @@
+---
+name: Reusable Workflow Caller
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  call-workflow:
+    uses: owner/repo/.github/workflows/deploy.yml@v1
+    with:
+      environment: production
+      debug: false
+      version: 1.2.3
+    secrets:
+      deploy-token: ${{ secrets.DEPLOY_TOKEN }}
+      api-key: ${{ secrets.API_KEY }}
+
+  call-workflow-inherit:
+    uses: owner/repo/.github/workflows/test.yml@main
+    secrets: inherit
+
+  call-local-workflow:
+    uses: ./.github/workflows/shared.yml
+    with:
+      config: custom

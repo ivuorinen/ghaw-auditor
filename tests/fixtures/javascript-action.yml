@@ -1,0 +1,27 @@
+---
+name: 'JavaScript Action'
+description: 'A Node.js action example'
+author: 'GitHub'
+
+inputs:
+  token:
+    description: 'GitHub token'
+    required: true
+  timeout:
+    description: 'Timeout in seconds'
+    required: false
+    default: '60'
+
+outputs:
+  status:
+    description: 'Action status'
+
+runs:
+  using: node20
+  main: dist/index.js
+  pre: dist/setup.js
+  post: dist/cleanup.js
+
+branding:
+  icon: 'code'
+  color: 'blue'
