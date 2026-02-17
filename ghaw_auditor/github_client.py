@@ -70,7 +70,7 @@ class GitHubClient:
         try:
             response = self.client.get(url)
             response.raise_for_status()
-            sha = response.json()["sha"]
+            sha: str = response.json()["sha"]
             logger.debug(f"Resolved {owner}/{repo}@{ref} -> {sha}")
             return sha
         except httpx.HTTPStatusError as e:

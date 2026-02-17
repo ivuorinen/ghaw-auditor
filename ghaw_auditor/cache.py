@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import diskcache
+import diskcache  # type: ignore[import-untyped]
 from platformdirs import user_cache_dir
 
 logger = logging.getLogger(__name__)
