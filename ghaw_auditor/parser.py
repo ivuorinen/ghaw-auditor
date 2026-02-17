@@ -159,6 +159,7 @@ class Parser:
 
         if is_reusable_call:
             # Parse reusable workflow reference
+            assert isinstance(uses, str)  # Type guard: is_reusable_call ensures uses is not None
             workflow_ref = self._parse_reusable_workflow_ref(uses, path)
             actions_used.append(workflow_ref)
         else:
