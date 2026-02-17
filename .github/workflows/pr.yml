@@ -36,10 +36,8 @@ jobs:
 
       - uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
 
-      - name: Install
-        run: |
-          uv sync
-          uv pip install -e .
+      - name: Install dependencies
+        run: uv sync
 
       - name: Audit workflows
         run: uv run ghaw-auditor scan --repo . --output audit-results
