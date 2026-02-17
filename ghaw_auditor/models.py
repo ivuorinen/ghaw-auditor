@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class ActionType(str, Enum):
+class ActionType(StrEnum):
     """Type of action reference."""
 
     LOCAL = "local"
@@ -72,7 +72,7 @@ class ActionManifest(BaseModel):
     is_javascript: bool = False
 
 
-class PermissionLevel(str, Enum):
+class PermissionLevel(StrEnum):
     """Permission level."""
 
     NONE = "none"
@@ -134,7 +134,7 @@ class JobMeta(BaseModel):
     name: str
     runs_on: str | list[str]
     needs: list[str] = Field(default_factory=list)
-    if_condition: str | None = Field(None, alias="if")
+    if_condition: str | None = Field(default=None, alias="if")
     permissions: Permissions | None = None
     environment: str | dict[str, Any] | None = None
     concurrency: str | dict[str, Any] | None = None

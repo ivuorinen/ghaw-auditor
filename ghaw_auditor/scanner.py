@@ -35,7 +35,7 @@ class Scanner:
 
     def find_workflows(self) -> list[Path]:
         """Find all workflow files."""
-        workflows = []
+        workflows: list[Path] = []
         workflow_dir = self.repo_path / ".github" / "workflows"
 
         if not workflow_dir.exists():
