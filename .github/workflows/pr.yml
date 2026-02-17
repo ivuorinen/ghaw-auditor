@@ -24,7 +24,7 @@ jobs:
         run: uvx ruff check .
 
       - name: Type check
-        run: uvx mypy .
+        run: uv run mypy .
 
   audit:
     runs-on: ubuntu-latest
