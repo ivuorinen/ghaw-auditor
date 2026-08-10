@@ -1,7 +1,8 @@
 # Architecture Profile
 
 Detected automatically from the module import graph (`ast`-parsed, not inferred
-from naming). Regenerate by re-running `/nitpicker arch-profile`.
+from naming) and from the call sites in each entry point. Regenerate by
+re-running `/nitpicker arch-profile`.
 
 ## Detected pattern
 
@@ -12,7 +13,8 @@ service, which drives a fixed pipeline of single-responsibility components over
 a shared set of pydantic data contracts.
 
 ```text
-L0  cli.py                          Typer commands, console I/O, exit codes
+L0  cli.py                          Typer commands, console I/O, exit codes,
+                                    report rendering and diff orchestration
 L1  factory.py                      composition root (AuditServiceFactory)
 L2  services.py                     AuditService / DiffService orchestration
 L3  scanner parser resolver         pipeline components
@@ -21,7 +23,8 @@ L4  github_client.py cache.py       infrastructure (HTTP, disk)
 L5  models.py                       pydantic contracts (leaf)
 ```
 
-Pipeline order inside `AuditService.scan`:
+`AuditService.scan` covers discovery through validation and **stops there** — it
+calls only `scanner`, `parser`, `analyzer`, `resolver` and `validator`:
 
 ```text
 scanner.find_workflows ─┐
@@ -31,16 +34,26 @@ scanner.find_actions ───┘                                    │
                                               resolver.resolve_actions (network)
                                                              │
                               analyzer.analyze_workflows <───┤
-                              policy.validate           <────┘
+                              validator.validate        <────┘
                                         │
                                         v
-                          renderer.render_json / render_markdown
-                          differ.diff_workflows / diff_actions
+                                   ScanResult
+```
+
+Rendering and diffing are **not** part of the service pipeline. `cli.scan`
+constructs `Renderer` directly and calls `_handle_diff_mode`, which builds a
+`DiffService` around `Differ`:
+
+```text
+ScanResult ──> cli.scan ──> Renderer.render_json / render_markdown
+                       └──> _handle_diff_mode ──> DiffService ──> Differ
 ```
 
 ## Verified invariants
 
-Measured across all 14 modules:
+Measured across all 14 modules (`__init__`, `analyzer`, `cache`, `cli`,
+`differ`, `factory`, `github_client`, `models`, `parser`, `policy`, `renderer`,
+`resolver`, `scanner`, `services`):
 
 | Invariant | Result |
 | --- | --- |
@@ -51,7 +64,7 @@ Measured across all 14 modules:
 | `scanner` imports nothing from the package | **holds** |
 | Infrastructure is injected, never constructed by pipeline components | **holds** — only `factory` constructs `GitHubClient`/`Cache` |
 
-Full measured graph:
+Full measured graph — every one of the 14 modules:
 
 | Module | Layer | Imports (in-package) |
 | --- | --- | --- |
@@ -59,26 +72,36 @@ Full measured graph:
 | `factory` | 1 | analyzer, cache, github_client, models, parser, policy, resolver, scanner, services |
 | `services` | 2 | analyzer, differ, models, parser, policy, resolver, scanner |
 | `resolver` | 3 | cache, github_client, models, parser |
-| `analyzer`, `differ`, `parser`, `policy`, `renderer` | 3 | models |
+| `analyzer` | 3 | models |
+| `differ` | 3 | models |
+| `parser` | 3 | models |
+| `policy` | 3 | models |
+| `renderer` | 3 | models |
 | `scanner` | 3 | — |
-| `github_client`, `cache`, `models` | 4–5 | — |
+| `github_client` | 4 | — |
+| `cache` | 4 | — |
+| `models` | 5 | — |
+| `__init__` | — | — (version string only) |
 
 ## Known deviation
 
-`cli.inventory` (`cli.py:185-188`) and `cli.validate` (`cli.py:220-222`)
-construct `Scanner`, `Parser` and `Analyzer` directly instead of going through
-`AuditServiceFactory`, bypassing L1 and L2. Only `scan` uses the composition
-root.
+`cli.inventory` and `cli.validate` bypass L1 and L2, constructing pipeline
+components directly instead of going through `AuditServiceFactory`:
 
-This duplicates the factory's wiring (`factory.py:46-48`) and is the structural
-reason those two commands diverge from `scan` in behaviour: they cannot receive
-`exclude_patterns`, and each re-implements its own parse loop with its own error
-handling (`cli.py:193-200` vs `cli.py:228-237` vs `services.py:66-73` — three
-copies).
+| Entry point | Constructs directly | Routes through factory |
+| --- | --- | --- |
+| `cli.scan` | `Renderer` | **yes** — `AuditServiceFactory.create` |
+| `cli.inventory` | `Scanner`, `Parser`, `Analyzer` | no |
+| `cli.validate` | `Scanner`, `Parser`, `PolicyValidator` | no |
 
-The deviation is deliberate to the extent that `inventory` and `validate` need
-no network client, but the correct expression of that is a factory parameter
-(`offline=True` already exists), not a parallel construction path.
+This duplicates the factory's wiring (`factory.py`) and is the structural reason
+those two commands diverge from `scan`: neither can receive `exclude_patterns`,
+and the parse-and-collect loop exists in three copies (`cli.inventory`,
+`cli.validate`, `AuditService.scan`).
+
+The deviation is deliberate to the extent that neither command needs a network
+client, but the correct expression of that is a factory parameter (`offline=True`
+already exists), not a parallel construction path.
 
 ## Rules this profile implies
 
@@ -90,3 +113,5 @@ no network client, but the correct expression of that is a factory parameter
 4. Objects owning OS resources (`Cache`, `GitHubClient`) are created only in the
    composition root, so that root owns closing them.
 5. New CLI commands route through `AuditServiceFactory`, not direct construction.
+6. Output concerns (`Renderer`, `Differ`) stay outside `AuditService.scan`; the
+   service returns a `ScanResult` and the caller decides how to present it.

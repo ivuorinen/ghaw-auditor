@@ -39,7 +39,7 @@ uv run mypy .
 ## Testing
 
 - Write tests for new features
-- Maintain coverage ≥ 85%
+- Maintain 100% branch coverage (enforced: `--cov-branch --cov-fail-under=100`)
 - Use pytest fixtures
 - Mock external API calls
 
