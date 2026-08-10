@@ -135,8 +135,17 @@ uvx ghaw-auditor validate --policy policy.yml --enforce
 
 **Options:**
 
-- `--policy <file>` - Policy file path
-- `--enforce` - Exit non-zero on violations
+- `--policy-file <file>` - Policy file path (YAML; see Policy Configuration)
+- `--enforce` - Exit 1 when any `error`-severity violation is found
+- `--exclude <glob>` - Exclude paths from scanning (repeatable)
+
+**Exit codes:**
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Completed; no enforced violations |
+| 1 | Policy enforcement failed, repository not found, or baseline missing |
+| 2 | Unexpected error, or invalid command-line usage |
 
 ## Diff Mode
 
@@ -224,11 +233,18 @@ min_permissions: true             # Enforce least-privilege
 
 **Policy rules:**
 
-- `require_pinned_actions` - Actions must be pinned to SHA (not tags/branches)
-- `forbid_branch_refs` - Forbid branch references (main, master, develop)
-- `allowed_actions` - Whitelist of allowed actions (glob patterns)
-- `denied_actions` - Blacklist of forbidden actions
+- `min_permissions` - Flag `write-all` (error) and workflows that declare no
+  permissions at all (warning, since the token inherits the repository default)
+- `require_pinned_actions` - Actions must be pinned to a full SHA (40-char
+  SHA-1 or 64-char SHA-256, either case). Applies to reusable workflow calls too
+- `forbid_branch_refs` - Forbid branch references (main, master, develop, dev).
+  Applies to reusable workflow calls too
+- `allowed_actions` - Whitelist of allowed actions (glob patterns: `*`, `?`, `[seq]`)
+- `denied_actions` - Blacklist of forbidden actions (same glob syntax)
 - `require_concurrency_on_pr` - PR workflows must set concurrency groups
+
+All rules apply to both `owner/repo@ref` actions and
+`owner/repo/.github/workflows/wf.yml@ref` reusable workflow calls.
 
 **Enforcement:**
 
@@ -311,13 +327,13 @@ uv run ghaw-auditor scan --repo .
 uv run -m pytest
 
 # Lint
-uvx ruff check .
+uv run ruff check .
 
 # Format
-uvx ruff format .
+uv run ruff format .
 
 # Type check
-uvx mypy .
+uv run mypy .
 
 # Coverage
 uv run -m pytest --cov --cov-report=html
@@ -470,7 +486,7 @@ MIT
 Contributions welcome! Please ensure:
 
 - Tests pass: `uv run -m pytest`
-- Code formatted: `uvx ruff format .`
-- Linting clean: `uvx ruff check .`
-- Type hints valid: `uvx mypy .`
+- Code formatted: `uv run ruff format .`
+- Linting clean: `uv run ruff check .`
+- Type hints valid: `uv run mypy .`
 - Coverage ≥ 85%
