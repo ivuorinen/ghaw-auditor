@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from ghaw_auditor.analyzer import Analyzer
 from ghaw_auditor.differ import Differ
@@ -20,6 +21,13 @@ from ghaw_auditor.resolver import Resolver
 from ghaw_auditor.scanner import Scanner
 
 logger = logging.getLogger(__name__)
+
+
+class Closeable(Protocol):
+    """Anything owning an OS resource that must be released."""
+
+    def close(self) -> None:
+        """Release the underlying resource."""
 
 
 @dataclass
@@ -45,13 +53,37 @@ class AuditService:
         analyzer: Analyzer,
         resolver: Resolver | None = None,
         validator: PolicyValidator | None = None,
+        closeables: Sequence[Closeable] = (),
     ) -> None:
-        """Initialize audit service."""
+        """Initialize audit service.
+
+        ``closeables`` are OS-resource owners created by the composition root
+        (the disk cache's sqlite connection, the HTTP connection pool). The
+        service owns closing them so the caller can use a single ``with``.
+        """
         self.scanner = scanner
         self.parser = parser
         self.analyzer = analyzer
         self.resolver = resolver
         self.validator = validator
+        self._closeables = list(closeables)
+
+    def close(self) -> None:
+        """Release every resource the factory opened for this service."""
+        for closeable in self._closeables:
+            try:
+                closeable.close()
+            except Exception:  # a failed close must not mask the audit result
+                logger.debug("Failed to close %r", closeable, exc_info=True)
+        self._closeables.clear()
+
+    def __enter__(self) -> AuditService:
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        """Context manager exit."""
+        self.close()
 
     def scan(self, offline: bool = False) -> ScanResult:
         """Execute scan workflow and return results."""
@@ -86,7 +118,7 @@ class AuditService:
         # Validate
         violations = []
         if self.validator:
-            violations = self.validator.validate(workflows, all_actions)
+            violations = self.validator.validate(workflows)
 
         return ScanResult(
             workflows=workflows,

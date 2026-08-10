@@ -180,17 +180,12 @@ class WorkflowMeta(BaseModel):
     actions_used: list[ActionRef] = Field(default_factory=list)
 
 
-class PolicyRule(BaseModel):
-    """Policy rule."""
-
-    name: str
-    enabled: bool = True
-    severity: str = "warning"  # warning, error
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
 class Policy(BaseModel):
-    """Audit policy configuration."""
+    """Audit policy configuration.
+
+    Every field here is read by PolicyValidator. A field that nothing enforces
+    is a false promise in a security tool, so do not add one speculatively.
+    """
 
     min_permissions: bool = True
     require_pinned_actions: bool = True
@@ -198,7 +193,6 @@ class Policy(BaseModel):
     allowed_actions: list[str] = Field(default_factory=list)
     denied_actions: list[str] = Field(default_factory=list)
     require_concurrency_on_pr: bool = False
-    custom_rules: list[PolicyRule] = Field(default_factory=list)
 
 
 class BaselineMeta(BaseModel):

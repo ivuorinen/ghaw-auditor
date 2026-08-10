@@ -529,3 +529,59 @@ runs:
     assert key == "local:./my-action/action.yml"
     assert manifest is not None
     assert manifest.name == "File Path Action"
+
+
+def test_server_error_is_not_reported_as_a_missing_manifest(tmp_path: Path) -> None:
+    """A 5xx while fetching a manifest must not be mistaken for 'not found'.
+
+    The fallback loop caught bare Exception and moved on, so a server error or
+    an exhausted rate limit was reported as a missing action.yml — sending users
+    to look at the wrong repository.
+    """
+    import httpx
+
+    client = Mock()
+    response = Mock()
+    response.status_code = 503
+    client.get_file_content.side_effect = httpx.HTTPStatusError("boom", request=Mock(), response=response)
+
+    resolver = Resolver(
+        client, Mock(get=Mock(return_value=None), set=Mock(), make_key=Mock(return_value="k")), tmp_path
+    )
+    action = ActionRef(type=ActionType.GITHUB, owner="a", repo="b", ref="v1", source_file="w.yml")
+
+    assert resolver._fetch_manifest_content(action, "sha", "") is None
+    # Stops at the first non-404 instead of pointlessly trying action.yaml too.
+    assert client.get_file_content.call_count == 1
+
+
+def test_404_falls_back_to_action_yaml(tmp_path: Path) -> None:
+    """A genuine 404 on action.yml still tries action.yaml."""
+    import httpx
+
+    response = Mock()
+    response.status_code = 404
+    client = Mock()
+    client.get_file_content.side_effect = httpx.HTTPStatusError("nf", request=Mock(), response=response)
+
+    resolver = Resolver(
+        client, Mock(get=Mock(return_value=None), set=Mock(), make_key=Mock(return_value="k")), tmp_path
+    )
+    action = ActionRef(type=ActionType.GITHUB, owner="a", repo="b", ref="v1", source_file="w.yml")
+
+    assert resolver._fetch_manifest_content(action, "sha", "") is None
+    assert client.get_file_content.call_count == 2
+
+
+def test_non_http_error_while_fetching_is_logged_and_stops(tmp_path: Path) -> None:
+    """A transport-level failure aborts rather than masquerading as not-found."""
+    client = Mock()
+    client.get_file_content.side_effect = RuntimeError("socket exploded")
+
+    resolver = Resolver(
+        client, Mock(get=Mock(return_value=None), set=Mock(), make_key=Mock(return_value="k")), tmp_path
+    )
+    action = ActionRef(type=ActionType.GITHUB, owner="a", repo="b", ref="v1", source_file="w.yml")
+
+    assert resolver._fetch_manifest_content(action, "sha", "") is None
+    assert client.get_file_content.call_count == 1

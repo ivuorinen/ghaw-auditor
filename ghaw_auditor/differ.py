@@ -88,14 +88,15 @@ class Differ:
             baseline_wf = baseline.get(path)
             current_wf = current.get(path)
 
-            if not baseline_wf and current_wf:
-                # Added
+            if baseline_wf is None:
+                # `path` comes from the union of both key sets, so absent from
+                # the baseline means present in current: added.
                 diffs.append(WorkflowDiff(path=path, status="added", changes=[]))
-            elif baseline_wf and not current_wf:
+            elif current_wf is None:
                 # Removed
                 diffs.append(WorkflowDiff(path=path, status="removed", changes=[]))
-            elif baseline_wf and current_wf:
-                # Compare
+            else:
+                # Present in both; both names are narrowed to non-None here.
                 changes = self._compare_workflows(baseline_wf, current_wf)
                 status = "modified" if changes else "unchanged"
                 diffs.append(WorkflowDiff(path=path, status=status, changes=changes))
@@ -165,17 +166,50 @@ class Differ:
             baseline_action = baseline.get(key)
             current_action = current.get(key)
 
-            if not baseline_action and current_action:
-                # Added
+            if baseline_action is None:
+                # `key` comes from the union of both key sets, so absent from
+                # the baseline means present in current: added.
                 diffs.append(ActionDiff(key=key, status="added", changes=[]))
-            elif baseline_action and not current_action:
+            elif current_action is None:
                 # Removed
                 diffs.append(ActionDiff(key=key, status="removed", changes=[]))
-            elif baseline_action and current_action:
-                # Compare (for now, just mark as unchanged)
-                diffs.append(ActionDiff(key=key, status="unchanged", changes=[]))
+            else:
+                # Present in both; both names are narrowed to non-None here.
+                changes = self._compare_actions(baseline_action, current_action)
+                status = "modified" if changes else "unchanged"
+                diffs.append(ActionDiff(key=key, status=status, changes=changes))
 
         return diffs
+
+    def _compare_actions(self, old: ActionManifest, new: ActionManifest) -> list[DiffEntry]:
+        """Compare two action manifests sharing a key.
+
+        A key can stay stable while the manifest behind it changes — a mutable
+        tag repointed upstream, or a local action edited in place. That is the
+        supply-chain drift a baseline diff exists to catch.
+        """
+        changes: list[DiffEntry] = []
+
+        for field in ("name", "description", "author", "runs", "is_composite", "is_docker", "is_javascript"):
+            old_value = getattr(old, field)
+            new_value = getattr(new, field)
+            if old_value != new_value:
+                changes.append(DiffEntry(field=field, old_value=old_value, new_value=new_value, change_type="modified"))
+
+        for field in ("inputs", "outputs"):
+            old_items = {k: v.model_dump(mode="json") for k, v in getattr(old, field).items()}
+            new_items = {k: v.model_dump(mode="json") for k, v in getattr(new, field).items()}
+            if old_items != new_items:
+                changes.append(
+                    DiffEntry(
+                        field=field,
+                        old_value=sorted(old_items),
+                        new_value=sorted(new_items),
+                        change_type="modified",
+                    )
+                )
+
+        return changes
 
     def _write_workflow_changes(self, f: Any, workflow_diffs: list[WorkflowDiff]) -> None:
         """Write workflow changes section to markdown file."""
@@ -219,9 +253,11 @@ class Differ:
 
         added_actions = [d for d in action_diffs if d.status == "added"]
         removed_actions = [d for d in action_diffs if d.status == "removed"]
+        modified_actions = [d for d in action_diffs if d.status == "modified"]
 
         f.write(f"- **Added:** {len(added_actions)}\n")
-        f.write(f"- **Removed:** {len(removed_actions)}\n\n")
+        f.write(f"- **Removed:** {len(removed_actions)}\n")
+        f.write(f"- **Modified:** {len(modified_actions)}\n\n")
 
         if added_actions:
             f.write("### Added Actions\n\n")
@@ -233,6 +269,19 @@ class Differ:
             f.write("### Removed Actions\n\n")
             for diff in removed_actions:
                 f.write(f"- `{diff.key}`\n")
+            f.write("\n")
+
+        if modified_actions:
+            f.write("### Modified Actions\n\n")
+            for diff in modified_actions:
+                f.write(f"#### {diff.key}\n\n")
+                for change in diff.changes:
+                    f.write(f"- **{change.field}** changed\n")
+                    if change.old_value is not None:
+                        f.write(f"  - Old: `{change.old_value}`\n")
+                    if change.new_value is not None:
+                        f.write(f"  - New: `{change.new_value}`\n")
+                f.write("\n")
 
     def render_diff_markdown(
         self, workflow_diffs: list[WorkflowDiff], action_diffs: list[ActionDiff], output_path: Path

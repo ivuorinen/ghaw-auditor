@@ -373,13 +373,16 @@ jobs:
 
 def test_validate_command_no_violations(tmp_path: Path) -> None:
     """Test validate command with no violations."""
-    # Create workflow with pinned action (valid 40-char SHA)
+    # Pinned action AND an explicit least-privilege permissions block: both
+    # default rules (require_pinned_actions, min_permissions) must be satisfied.
     workflows_dir = tmp_path / ".github" / "workflows"
     workflows_dir.mkdir(parents=True)
     (workflows_dir / "ci.yml").write_text(
         """
 name: CI
 on: push
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -444,9 +447,10 @@ def test_scan_command_diff_baseline_not_found(tmp_path: Path) -> None:
         ],
     )
 
-    # Should complete but log error about missing baseline
-    assert result.exit_code == 0
-    # Diff should be attempted but baseline not found is logged
+    # An explicitly requested diff that cannot run must fail, not report success.
+    # Exit 1 (not 2) proves the deliberate exit survives the generic handler.
+    assert result.exit_code == 1
+    assert "Baseline not found" in result.output
 
 
 def test_scan_command_general_exception(tmp_path: Path) -> None:
@@ -582,3 +586,194 @@ jobs:
 
     assert result.exit_code == 0
     # Policy file exists, so TODO block executes
+
+
+# ============================================================================
+# Regression tests for defects found by the /nitpicker audit.
+# ============================================================================
+
+
+def _repo_with_unpinned_action(tmp_path: Path) -> Path:
+    """Create a repo whose only workflow uses an unpinned action."""
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    (workflows_dir / "ci.yml").write_text(
+        "name: CI\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - uses: actions/checkout@v4\n"
+    )
+    return tmp_path
+
+
+def test_validate_honours_denied_actions_from_policy_file(tmp_path: Path) -> None:
+    """A rule written in the policy file must actually be enforced.
+
+    The loader was a TODO: the file was checked for existence and discarded, so
+    every user-authored rule silently became the built-in default.
+    """
+    repo = _repo_with_unpinned_action(tmp_path)
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_text("require_pinned_actions: false\ndenied_actions:\n  - actions/checkout\n")
+
+    result = runner.invoke(app, ["validate", "--repo", str(repo), "--policy-file", str(policy_file)])
+
+    assert result.exit_code == 0
+    assert "denied by policy" in result.output
+
+
+def test_validate_policy_file_can_disable_a_default_rule(tmp_path: Path) -> None:
+    """Setting require_pinned_actions: false must suppress the default violation."""
+    repo = _repo_with_unpinned_action(tmp_path)
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_text("require_pinned_actions: false\nmin_permissions: false\n")
+
+    result = runner.invoke(app, ["validate", "--repo", str(repo), "--policy-file", str(policy_file)])
+
+    assert result.exit_code == 0
+    assert "No policy violations found" in result.output
+
+
+def test_missing_policy_file_is_an_error_not_a_silent_default(tmp_path: Path) -> None:
+    """A --policy-file path that does not exist must fail loudly."""
+    repo = _repo_with_unpinned_action(tmp_path)
+
+    result = runner.invoke(app, ["validate", "--repo", str(repo), "--policy-file", str(tmp_path / "nope.yml")])
+
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()
+
+
+def test_scan_enforce_exits_1_not_2(tmp_path: Path) -> None:
+    """Policy enforcement failure must exit 1, distinct from a crash (2).
+
+    typer.Exit subclasses RuntimeError, so the blanket `except Exception`
+    rewrote every deliberate exit to 2 and made --enforce unusable as a gate.
+    """
+    repo = _repo_with_unpinned_action(tmp_path)
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_text("require_pinned_actions: true\n")
+
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--repo",
+            str(repo),
+            "--offline",
+            "--enforce",
+            "--policy-file",
+            str(policy_file),
+            "--output",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert result.exit_code == 1
+
+
+def test_scan_enforce_does_not_print_success_banner_on_failure(tmp_path: Path) -> None:
+    """The success banner must not appear when enforcement fails."""
+    repo = _repo_with_unpinned_action(tmp_path)
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_text("require_pinned_actions: true\n")
+
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            "--repo",
+            str(repo),
+            "--offline",
+            "--enforce",
+            "--policy-file",
+            str(policy_file),
+            "--output",
+            str(tmp_path / "out"),
+        ],
+    )
+
+    assert "Audit complete" not in result.output
+
+
+def test_policy_file_with_invalid_yaml_is_rejected(tmp_path: Path) -> None:
+    """Malformed YAML in a policy file fails with a clear message."""
+    repo = _repo_with_unpinned_action(tmp_path)
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_text("denied_actions: [unclosed\n")
+
+    result = runner.invoke(app, ["validate", "--repo", str(repo), "--policy-file", str(policy_file)])
+
+    assert result.exit_code != 0
+    assert "Invalid YAML" in result.output
+
+
+def test_policy_file_that_is_not_a_mapping_is_rejected(tmp_path: Path) -> None:
+    """A policy file holding a list rather than a mapping is rejected."""
+    repo = _repo_with_unpinned_action(tmp_path)
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_text("- just\n- a\n- list\n")
+
+    result = runner.invoke(app, ["validate", "--repo", str(repo), "--policy-file", str(policy_file)])
+
+    assert result.exit_code != 0
+    assert "must contain a YAML mapping" in result.output
+
+
+def test_policy_file_with_wrong_field_type_is_rejected(tmp_path: Path) -> None:
+    """A policy whose field has the wrong type fails validation, not silently."""
+    repo = _repo_with_unpinned_action(tmp_path)
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_text("denied_actions: 42\n")
+
+    result = runner.invoke(app, ["validate", "--repo", str(repo), "--policy-file", str(policy_file)])
+
+    assert result.exit_code != 0
+    assert "Invalid policy" in result.output
+
+
+def test_scan_rejects_bad_policy_file_with_a_specific_message(tmp_path: Path) -> None:
+    """scan explains *why* a policy file was rejected rather than crashing opaquely.
+
+    The exit code here is click's usage-error convention (2); what matters is
+    that the generic handler did not swallow the reason and log an
+    unexplained "Scan failed".
+    """
+    repo = _repo_with_unpinned_action(tmp_path)
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_text("- not a mapping\n")
+
+    result = runner.invoke(
+        app,
+        ["scan", "--repo", str(repo), "--offline", "--policy-file", str(policy_file), "--output", str(tmp_path / "o")],
+    )
+
+    assert result.exit_code != 0
+    assert "must contain a YAML mapping" in result.output
+    assert "Scan failed" not in result.output
+
+
+def test_enforce_policy_passes_when_only_warnings_present() -> None:
+    """Warning-severity violations must not trip enforcement."""
+    from ghaw_auditor.cli import _enforce_policy
+
+    # Returns normally; a raised typer.Exit would fail the test.
+    _enforce_policy([{"severity": "warning", "rule": "r", "workflow": "w", "message": "m"}])
+
+
+def test_validate_enforce_exits_zero_when_violations_are_only_warnings(tmp_path: Path) -> None:
+    """`validate --enforce` reports warnings but does not fail the build.
+
+    Only error-severity violations gate; min_permissions' "nothing declared"
+    signal is a warning by design.
+    """
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    (workflows_dir / "ci.yml").write_text(
+        "name: CI\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+    )
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_text("require_pinned_actions: false\nmin_permissions: true\n")
+
+    result = runner.invoke(app, ["validate", "--repo", str(tmp_path), "--policy-file", str(policy_file), "--enforce"])
+
+    assert result.exit_code == 0
+    assert "WARNING" in result.output

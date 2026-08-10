@@ -221,9 +221,7 @@ def test_github_client_logs_successful_file_content(mock_client_class: Mock, cap
 
 @patch("httpx.Client")
 def test_github_client_retries_5xx_errors(mock_client_class: Mock) -> None:
-    """Test that 5xx errors are retried."""
-    from tenacity import RetryError
-
+    """Test that 5xx errors are retried and surface the original httpx error."""
     mock_http_client = Mock()
     mock_response = Mock()
     mock_response.status_code = 500
@@ -234,9 +232,12 @@ def test_github_client_retries_5xx_errors(mock_client_class: Mock) -> None:
     mock_client_class.return_value = mock_http_client
 
     client = GitHubClient()
-    with pytest.raises(RetryError):
+    # reraise=True: callers get the real HTTPStatusError with its status code,
+    # not a tenacity RetryError that hides the URL and reason.
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
         client.get_ref_sha("actions", "checkout", "v1")
 
+    assert exc_info.value.response.status_code == 500
     # Should have retried 3 times
     assert mock_http_client.get.call_count == 3
 
@@ -245,8 +246,6 @@ def test_github_client_retries_5xx_errors(mock_client_class: Mock) -> None:
 def test_github_client_logs_5xx_warning(mock_client_class: Mock, caplog: pytest.LogCaptureFixture) -> None:
     """Test that 5xx errors are logged at WARNING level."""
     import logging
-
-    from tenacity import RetryError
 
     mock_http_client = Mock()
     mock_response = Mock()
@@ -259,7 +258,7 @@ def test_github_client_logs_5xx_warning(mock_client_class: Mock, caplog: pytest.
 
     with caplog.at_level(logging.WARNING):
         client = GitHubClient()
-        with pytest.raises(RetryError):
+        with pytest.raises(httpx.HTTPStatusError):
             client.get_file_content("actions", "checkout", "action.yml", "v4")
 
     assert "HTTP 503" in caplog.text

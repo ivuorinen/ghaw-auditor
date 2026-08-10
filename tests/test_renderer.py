@@ -753,3 +753,67 @@ def test_render_markdown_with_workflows_using_action(tmp_path: Path) -> None:
     # Should have links to workflow sections
     assert "[CI Workflow](#ci-workflow)" in content
     assert "[Deploy Workflow](#deploy-workflow)" in content
+
+
+def test_markdown_report_flags_actions_missing_a_description(tmp_path: Path) -> None:
+    """Resolved actions without a description are surfaced in the analysis."""
+    renderer = Renderer(tmp_path)
+    analysis = {
+        "actions": {
+            "total_resolved": 2,
+            "composite": 1,
+            "docker": 0,
+            "javascript": 1,
+            "missing_description": ["actions/x@v1"],
+        }
+    }
+
+    renderer.render_markdown({}, {}, [], analysis)
+
+    text = (tmp_path / "report.md").read_text()
+    assert "Resolved Actions" in text
+    assert "Missing description:** 1" in text
+
+
+def test_job_with_empty_permissions_object_renders_no_permissions_block(tmp_path: Path) -> None:
+    """A permissions mapping whose entries are all unset prints nothing.
+
+    `permissions: {}` yields a Permissions object with every field None; there
+    is no scope to report.
+    """
+    from ghaw_auditor.models import Permissions
+
+    job = JobMeta(name="build", runs_on="ubuntu-latest", permissions=Permissions())
+    workflow = WorkflowMeta(name="wf", path="w.yml", jobs={"build": job})
+
+    Renderer(tmp_path).render_markdown({"w.yml": workflow}, {}, [], {})
+
+    text = (tmp_path / "report.md").read_text()
+    assert "Runner:" in text
+    assert "- Permissions:" not in text
+
+
+def test_action_without_description_renders_cleanly(tmp_path: Path) -> None:
+    """An action manifest with no description omits the description paragraph."""
+    action = ActionManifest(name="NoDesc")
+
+    Renderer(tmp_path).render_markdown({}, {"actions/x@v1": action}, [], {})
+
+    text = (tmp_path / "report.md").read_text()
+    assert "NoDesc" in text
+
+
+def test_workflow_listing_skips_non_matching_action_refs(tmp_path: Path) -> None:
+    """The 'Used in Workflows' scan walks past refs that do not match the key."""
+    from ghaw_auditor.models import ActionRef, ActionType
+
+    other = ActionRef(type=ActionType.GITHUB, owner="other", repo="thing", ref="v1", source_file="w.yml")
+    target = ActionRef(type=ActionType.GITHUB, owner="actions", repo="checkout", ref="v4", source_file="w.yml")
+    workflow = WorkflowMeta(name="WF", path="w.yml", jobs={}, actions_used=[other, target])
+
+    Renderer(tmp_path).render_markdown(
+        {"w.yml": workflow}, {target.canonical_key(): ActionManifest(name="Checkout")}, [], {}
+    )
+
+    text = (tmp_path / "report.md").read_text()
+    assert "Used in Workflows" in text
