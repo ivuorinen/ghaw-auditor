@@ -498,3 +498,36 @@ def test_diff_report_renders_changes_with_the_opposite_none_side(tmp_path: Path)
     assert "Modified Actions" in text
     assert "now documented" in text
     assert "`None`" not in text
+
+
+def test_diff_actions_detects_branding_only_change(tmp_path: Path) -> None:
+    """A branding-only manifest change is a modification, not "unchanged"."""
+    differ = Differ(tmp_path / "baseline")
+
+    old = ActionManifest(name="A", branding={"icon": "check", "color": "green"})
+    new = ActionManifest(name="A", branding={"icon": "x", "color": "red"})
+
+    diffs = differ.diff_actions({"a@v1": old}, {"a@v1": new})
+
+    assert diffs[0].status == "modified"
+    assert any(c.field == "branding" for c in diffs[0].changes)
+
+
+def test_diff_actions_detects_change_within_an_existing_input(tmp_path: Path) -> None:
+    """Changing an existing input's definition must show distinct old and new.
+
+    Storing only the key set left the report showing identical old and new
+    values whenever the key set was unchanged.
+    """
+    differ = Differ(tmp_path / "baseline")
+
+    old = ActionManifest(name="A", inputs={"token": ActionInput(name="token", required=False)})
+    new = ActionManifest(name="A", inputs={"token": ActionInput(name="token", required=True)})
+
+    diffs = differ.diff_actions({"a@v1": old}, {"a@v1": new})
+
+    assert diffs[0].status == "modified"
+    change = next(c for c in diffs[0].changes if c.field == "inputs")
+    assert change.old_value != change.new_value
+    assert change.old_value["token"]["required"] is False
+    assert change.new_value["token"]["required"] is True

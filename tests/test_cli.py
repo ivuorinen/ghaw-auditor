@@ -777,3 +777,50 @@ def test_validate_enforce_exits_zero_when_violations_are_only_warnings(tmp_path:
 
     assert result.exit_code == 0
     assert "WARNING" in result.output
+
+
+def test_policy_file_with_a_misspelled_key_is_rejected(tmp_path: Path) -> None:
+    """A typo in a policy key must fail, not silently disable the rule.
+
+    Pydantic ignores unknown fields by default, so `forbid_branch_ref` (missing
+    the trailing s) would leave forbid_branch_refs at its default while the
+    author believed the rule was on -- the same silent downgrade the policy
+    loader exists to prevent.
+    """
+    repo = _repo_with_unpinned_action(tmp_path)
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_text("forbid_branch_ref: true\n")
+
+    result = runner.invoke(app, ["validate", "--repo", str(repo), "--policy-file", str(policy_file)])
+
+    assert result.exit_code != 0
+    assert "Invalid policy" in result.output
+    assert "forbid_branch_ref" in result.output
+
+
+def test_policy_path_that_is_a_directory_is_a_parameter_error(tmp_path: Path) -> None:
+    """A directory passed as --policy-file fails with the path, not a traceback.
+
+    open() raises OSError (IsADirectoryError) here. Uncaught, scan reported a
+    generic "Scan failed" and validate surfaced the raw exception.
+    """
+    repo = _repo_with_unpinned_action(tmp_path)
+    as_dir = tmp_path / "policy_dir"
+    as_dir.mkdir()
+
+    result = runner.invoke(app, ["validate", "--repo", str(repo), "--policy-file", str(as_dir)])
+
+    assert result.exit_code != 0
+    assert "Cannot read policy file" in result.output
+
+
+def test_policy_file_with_invalid_utf8_is_a_parameter_error(tmp_path: Path) -> None:
+    """Non-UTF-8 bytes in a policy file fail cleanly rather than crashing."""
+    repo = _repo_with_unpinned_action(tmp_path)
+    policy_file = tmp_path / "policy.yml"
+    policy_file.write_bytes(b"\xff\xfe not utf-8 \x00")
+
+    result = runner.invoke(app, ["validate", "--repo", str(repo), "--policy-file", str(policy_file)])
+
+    assert result.exit_code != 0
+    assert "Cannot read policy file" in result.output

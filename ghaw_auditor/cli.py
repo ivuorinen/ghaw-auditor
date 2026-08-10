@@ -67,6 +67,10 @@ def _load_policy(policy_file: Path | None) -> Policy | None:
             data = yaml.load(f) or {}
     except YAMLError as e:
         raise typer.BadParameter(f"Invalid YAML in policy file {policy_file}: {e}") from e
+    except (OSError, UnicodeError) as e:
+        # A directory, a permissions problem or non-UTF-8 bytes. Without this,
+        # scan reports a generic "Scan failed" and validate raises uncaught.
+        raise typer.BadParameter(f"Cannot read policy file {policy_file}: {e}") from e
 
     if not isinstance(data, dict):
         raise typer.BadParameter(f"Policy file {policy_file} must contain a YAML mapping")

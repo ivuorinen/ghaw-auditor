@@ -16,6 +16,14 @@ from ghaw_auditor.parser import Parser
 logger = logging.getLogger(__name__)
 
 
+class ManifestFetchError(Exception):
+    """A manifest fetch failed for a reason other than the file being absent.
+
+    Distinguishes "this action has no action.yml" from "GitHub returned 503" or
+    "the token is rate-limited", which need completely different remedies.
+    """
+
+
 class Resolver:
     """Resolves action references and fetches manifests."""
 
@@ -102,10 +110,10 @@ class Resolver:
     def _fetch_manifest_content(self, action: ActionRef, sha: str, manifest_path: str) -> str | None:
         """Fetch an action manifest, trying action.yml then action.yaml.
 
-        Returns None when the manifest genuinely does not exist. Any other
-        failure (5xx, rate limit, network) is logged and also returns None, but
-        without pretending the next extension might work — reporting a server
-        error as "manifest not found" sends users to the wrong repository.
+        Returns None only when both filenames returned 404 -- the manifest
+        genuinely does not exist. Any other failure raises ManifestFetchError,
+        so the caller cannot report a server error or a rate limit as
+        "manifest not found" and send users to the wrong repository.
         """
         base_path = f"{manifest_path}/" if manifest_path else ""
 
@@ -116,11 +124,13 @@ class Resolver:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 404:
                     continue  # only a real 404 justifies trying the other extension
-                logger.error(f"HTTP {e.response.status_code} fetching {file_path} for {action.owner}/{action.repo}")
-                return None
+                message = f"HTTP {e.response.status_code} fetching {file_path} for {action.owner}/{action.repo}"
+                logger.error(message)
+                raise ManifestFetchError(message) from e
             except Exception as e:
-                logger.error(f"Failed fetching {file_path} for {action.owner}/{action.repo}: {e}")
-                return None
+                message = f"Failed fetching {file_path} for {action.owner}/{action.repo}: {e}"
+                logger.error(message)
+                raise ManifestFetchError(message) from e
 
         return None
 
@@ -149,7 +159,12 @@ class Resolver:
         manifest_content = self.cache.get(manifest_key)
 
         if not manifest_content:
-            manifest_content = self._fetch_manifest_content(action, sha, manifest_path)
+            try:
+                manifest_content = self._fetch_manifest_content(action, sha, manifest_path)
+            except ManifestFetchError:
+                # Already logged with the status code. Not a missing manifest,
+                # so do not claim one.
+                return "", None
             if manifest_content:
                 self.cache.set(manifest_key, manifest_content)
 

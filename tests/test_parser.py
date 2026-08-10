@@ -753,3 +753,63 @@ def test_action_inputs_and_outputs_ignore_non_mapping_entries() -> None:
 
     assert set(manifest.inputs) == {"good"}
     assert set(manifest.outputs) == {"good"}
+
+
+def test_hyphenated_permission_scopes_are_mapped_to_model_fields() -> None:
+    """GitHub Actions spells scopes with hyphens; the model uses snake_case.
+
+    Passing the hyphenated key straight to Permissions left it unmatched, and
+    pydantic drops unknown fields silently -- so `id-token: write` read as
+    "not granted". id-token is the OIDC scope, so that silence mattered.
+    """
+    perms = Parser(Path.cwd())._parse_permissions(
+        {
+            "contents": "read",
+            "id-token": "write",
+            "pull-requests": "write",
+            "security-events": "write",
+            "repository-projects": "read",
+        }
+    )
+
+    assert perms is not None
+    assert perms.contents == PermissionLevel.READ
+    assert perms.id_token == PermissionLevel.WRITE
+    assert perms.pull_requests == PermissionLevel.WRITE
+    assert perms.security_events == PermissionLevel.WRITE
+    assert perms.repository_projects == PermissionLevel.READ
+
+
+def test_snake_case_permission_scopes_still_work() -> None:
+    """The snake_case spelling keeps working after normalization."""
+    perms = Parser(Path.cwd())._parse_permissions({"id_token": "write"})
+
+    assert perms is not None
+    assert perms.id_token == PermissionLevel.WRITE
+
+
+def test_unknown_permission_scope_is_warned_not_silently_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unrecognized scope is reported rather than vanishing."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        perms = Parser(Path.cwd())._parse_permissions({"contents": "read", "not-a-scope": "write"})
+
+    assert perms is not None
+    assert perms.contents == PermissionLevel.READ
+    assert "not-a-scope" in caplog.text
+
+
+def test_permission_scope_with_no_value_is_skipped() -> None:
+    """`permissions:\\n  contents:` parses the scope as None and is skipped.
+
+    An empty value is not a level; treating it as one would raise on
+    PermissionLevel(None).
+    """
+    perms = Parser(Path.cwd())._parse_permissions({"contents": None, "issues": "write"})
+
+    assert perms is not None
+    assert perms.contents is None
+    assert perms.issues == PermissionLevel.WRITE

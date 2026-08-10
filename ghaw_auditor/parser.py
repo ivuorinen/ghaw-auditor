@@ -123,8 +123,30 @@ class Parser:
                 return None
             return Permissions(**dict.fromkeys(Permissions.model_fields, level))
         if isinstance(perms, dict):
-            return Permissions(**{k: PermissionLevel(v) for k, v in perms.items() if v})
+            return Permissions(**self._normalize_permission_scopes(perms))
         return None
+
+    def _normalize_permission_scopes(self, perms: dict[Any, Any]) -> dict[str, PermissionLevel]:
+        """Map GitHub Actions permission keys onto Permissions field names.
+
+        Actions spells these scopes with hyphens (`id-token`, `pull-requests`,
+        `security-events`, `repository-projects`) while the model uses
+        snake_case. Passing the hyphenated key straight through leaves it
+        unmatched, and pydantic drops unknown fields silently -- so
+        `id-token: write` would read as "not granted".
+        """
+        scopes: dict[str, PermissionLevel] = {}
+
+        for key, value in perms.items():
+            if not value:
+                continue
+            field = str(key).replace("-", "_")
+            if field not in Permissions.model_fields:
+                logger.warning(f"Unrecognized permission scope: {key!r}")
+                continue
+            scopes[field] = PermissionLevel(value)
+
+        return scopes
 
     def _parse_job(self, name: str, data: dict[str, Any] | None, path: Path) -> JobMeta:
         """Parse a job."""

@@ -54,31 +54,32 @@ def test_pinned_actions_validation() -> None:
 
 
 def test_pinned_actions_with_sha() -> None:
-    """Test pinned actions with SHA pass validation."""
+    """Test pinned actions with SHA pass validation.
+
+    WorkflowMeta.actions_used must carry the ref, mirroring what Parser builds
+    (the union of every job's actions). Leaving it empty made this assertion
+    vacuous -- it passed without the SHA ever reaching the validator.
+    """
     policy = Policy(require_pinned_actions=True, min_permissions=False)
     validator = PolicyValidator(policy)
 
+    pinned = ActionRef(
+        type=ActionType.GITHUB,
+        owner="actions",
+        repo="checkout",
+        ref="abc123def456789012345678901234567890abcd",  # SHA
+        source_file="test.yml",
+    )
     workflow = WorkflowMeta(
         name="Test",
         path="test.yml",
         triggers=["push"],
-        jobs={
-            "test": JobMeta(
-                name="test",
-                runs_on="ubuntu-latest",
-                actions_used=[
-                    ActionRef(
-                        type=ActionType.GITHUB,
-                        owner="actions",
-                        repo="checkout",
-                        ref="abc123def456789012345678901234567890abcd",  # SHA
-                        source_file="test.yml",
-                    )
-                ],
-            )
-        },
-        actions_used=[],
+        jobs={"test": JobMeta(name="test", runs_on="ubuntu-latest", actions_used=[pinned])},
+        actions_used=[pinned],
     )
+
+    # Guard: without this the assertion below passes on an empty input.
+    assert workflow.actions_used
 
     violations = validator.validate({"test.yml": workflow})
 

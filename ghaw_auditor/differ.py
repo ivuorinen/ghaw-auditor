@@ -190,21 +190,33 @@ class Differ:
         """
         changes: list[DiffEntry] = []
 
-        for field in ("name", "description", "author", "runs", "is_composite", "is_docker", "is_javascript"):
+        for field in (
+            "name",
+            "description",
+            "author",
+            "runs",
+            "branding",
+            "is_composite",
+            "is_docker",
+            "is_javascript",
+        ):
             old_value = getattr(old, field)
             new_value = getattr(new, field)
             if old_value != new_value:
                 changes.append(DiffEntry(field=field, old_value=old_value, new_value=new_value, change_type="modified"))
 
         for field in ("inputs", "outputs"):
+            # Keep the full serialized mappings, not just their keys: a changed
+            # description or `required` flag on an existing input leaves the key
+            # set identical, so storing keys alone renders old == new.
             old_items = {k: v.model_dump(mode="json") for k, v in getattr(old, field).items()}
             new_items = {k: v.model_dump(mode="json") for k, v in getattr(new, field).items()}
             if old_items != new_items:
                 changes.append(
                     DiffEntry(
                         field=field,
-                        old_value=sorted(old_items),
-                        new_value=sorted(new_items),
+                        old_value=old_items,
+                        new_value=new_items,
                         change_type="modified",
                     )
                 )

@@ -93,6 +93,10 @@ class Scanner:
             current_dir = Path(dirpath)
 
             if current_dir == workflows_dir:
+                # Clear dirnames too: `continue` alone skips only this directory,
+                # and os.walk would still descend into its children, reporting an
+                # action.yml under .github/workflows/*/ as a first-party action.
+                dirnames.clear()
                 continue
 
             for name in ("action.yml", "action.yaml"):

@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ActionType(StrEnum):
@@ -185,7 +185,15 @@ class Policy(BaseModel):
 
     Every field here is read by PolicyValidator. A field that nothing enforces
     is a false promise in a security tool, so do not add one speculatively.
+
+    extra="forbid" so a misspelled key is rejected rather than dropped. Pydantic
+    ignores unknown fields by default, which would leave `forbid_branch_ref`
+    (missing the trailing s) silently disabling the rule the author meant to
+    enable -- the same silent-downgrade failure this policy loader exists to
+    prevent.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     min_permissions: bool = True
     require_pinned_actions: bool = True
