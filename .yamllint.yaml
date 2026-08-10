@@ -1,0 +1,28 @@
+---
+# yamllint configuration.
+#
+# Without this file yamllint runs on stock defaults, which fail on the
+# repository's own committed workflows — a blocking pre-commit gate that pushes
+# contributors toward `git commit --no-verify`, disabling gitleaks and every
+# other hook along with it.
+
+extends: default
+
+rules:
+  # A 40-char SHA pin plus its conventional `# vX.Y.Z` annotation cannot fit in
+  # 80 columns. 120 matches [tool.ruff] line-length in pyproject.toml.
+  line-length:
+    max: 120
+
+  # `on:` in a GitHub Actions workflow is a mapping key, but YAML 1.1 reads the
+  # bare word as a boolean. Unavoidable in every Actions file.
+  truthy:
+    check-keys: false
+
+  # `uses: owner/repo@<sha> # v1.2.3` is the standard single-space pin comment.
+  comments:
+    min-spaces-from-content: 1
+
+ignore: |
+  .venv/
+  .git/

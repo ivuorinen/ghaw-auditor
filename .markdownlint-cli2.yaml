@@ -1,0 +1,21 @@
+---
+# markdownlint configuration.
+#
+# Without this file markdownlint runs on stock defaults, under which MD024
+# forbids any repeated heading text anywhere in a document. CHANGELOG.md follows
+# Keep a Changelog, which repeats "### Added" / "### Fixed" under every release
+# heading — so the second release entry would fail the hook and block the commit.
+
+config:
+  # Allow repeated headings under different parents (Keep a Changelog sections),
+  # while still catching genuine duplicates among siblings.
+  MD024:
+    siblings_only: true
+
+  # Generated report fixtures are not prose and are not hand-maintained.
+  MD013: false
+
+ignores:
+  - tests/golden/**
+  - docs/audit/findings/**
+  - .venv/**
