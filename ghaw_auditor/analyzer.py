@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ghaw_auditor.models import ActionManifest, WorkflowMeta
+from ghaw_auditor.models import ActionManifest, ActionRef, WorkflowMeta
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,19 @@ class Analyzer:
             "secrets": self._analyze_secrets(workflows),
             "runners": self._analyze_runners(workflows),
             "containers": self._analyze_containers(workflows),
+            "actions": self._analyze_actions(actions),
         }
         return analysis
+
+    def _analyze_actions(self, actions: dict[str, ActionManifest]) -> dict[str, Any]:
+        """Analyze resolved action manifests."""
+        return {
+            "total_resolved": len(actions),
+            "composite": sum(1 for a in actions.values() if a.is_composite),
+            "docker": sum(1 for a in actions.values() if a.is_docker),
+            "javascript": sum(1 for a in actions.values() if a.is_javascript),
+            "missing_description": sorted(k for k, a in actions.items() if not a.description),
+        }
 
     def _analyze_triggers(self, workflows: dict[str, WorkflowMeta]) -> dict[str, int]:
         """Analyze workflow triggers."""
@@ -85,9 +96,9 @@ class Analyzer:
             "jobs_with_services": jobs_with_services,
         }
 
-    def deduplicate_actions(self, all_actions: list[Any]) -> dict[str, Any]:
+    def deduplicate_actions(self, all_actions: list[ActionRef]) -> dict[str, ActionRef]:
         """Deduplicate actions by canonical key."""
-        unique_actions: dict[str, Any] = {}
+        unique_actions: dict[str, ActionRef] = {}
         for action in all_actions:
             key = action.canonical_key()
             if key not in unique_actions:

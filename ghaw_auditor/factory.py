@@ -12,7 +12,7 @@ from ghaw_auditor.parser import Parser
 from ghaw_auditor.policy import PolicyValidator
 from ghaw_auditor.resolver import Resolver
 from ghaw_auditor.scanner import Scanner
-from ghaw_auditor.services import AuditService
+from ghaw_auditor.services import AuditService, Closeable
 
 
 class AuditServiceFactory:
@@ -48,10 +48,15 @@ class AuditServiceFactory:
         analyzer = Analyzer()
         cache = Cache(cache_dir)
 
+        # This is the composition root, so it owns every OS resource it opens and
+        # hands ownership to the service, which closes them on exit.
+        closeables: list[Closeable] = [cache]
+
         # Optional resolver (only if not offline)
         resolver = None
         if not offline:
             client = GitHubClient(token)
+            closeables.append(client)
             resolver = Resolver(client, cache, repo_path, concurrency)
 
         # Optional validator (only if policy provided)
@@ -59,4 +64,4 @@ class AuditServiceFactory:
         if policy:
             validator = PolicyValidator(policy)
 
-        return AuditService(scanner, parser, analyzer, resolver, validator)
+        return AuditService(scanner, parser, analyzer, resolver, validator, closeables=closeables)

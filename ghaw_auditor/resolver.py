@@ -6,12 +6,22 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import httpx
+
 from ghaw_auditor.cache import Cache
 from ghaw_auditor.github_client import GitHubClient
 from ghaw_auditor.models import ActionManifest, ActionRef, ActionType
 from ghaw_auditor.parser import Parser
 
 logger = logging.getLogger(__name__)
+
+
+class ManifestFetchError(Exception):
+    """A manifest fetch failed for a reason other than the file being absent.
+
+    Distinguishes "this action has no action.yml" from "GitHub returned 503" or
+    "the token is rate-limited", which need completely different remedies.
+    """
 
 
 class Resolver:
@@ -97,6 +107,33 @@ class Resolver:
         logger.warning(f"Local action manifest not found: {action_path}")
         return "", None
 
+    def _fetch_manifest_content(self, action: ActionRef, sha: str, manifest_path: str) -> str | None:
+        """Fetch an action manifest, trying action.yml then action.yaml.
+
+        Returns None only when both filenames returned 404 -- the manifest
+        genuinely does not exist. Any other failure raises ManifestFetchError,
+        so the caller cannot report a server error or a rate limit as
+        "manifest not found" and send users to the wrong repository.
+        """
+        base_path = f"{manifest_path}/" if manifest_path else ""
+
+        for name in ("action.yml", "action.yaml"):
+            file_path = f"{base_path}{name}"
+            try:
+                return self.github_client.get_file_content(action.owner or "", action.repo or "", file_path, sha)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    continue  # only a real 404 justifies trying the other extension
+                message = f"HTTP {e.response.status_code} fetching {file_path} for {action.owner}/{action.repo}"
+                logger.error(message)
+                raise ManifestFetchError(message) from e
+            except Exception as e:
+                message = f"Failed fetching {file_path} for {action.owner}/{action.repo}: {e}"
+                logger.error(message)
+                raise ManifestFetchError(message) from e
+
+        return None
+
     def _resolve_github_action(self, action: ActionRef) -> tuple[str, ActionManifest | None]:
         """Resolve a GitHub action."""
         if not action.owner or not action.repo or not action.ref:
@@ -122,42 +159,30 @@ class Resolver:
         manifest_content = self.cache.get(manifest_key)
 
         if not manifest_content:
-            # Try action.yml first, then action.yaml
-            base_path = f"{manifest_path}/" if manifest_path else ""
-            for name in ("action.yml", "action.yaml"):
-                file_path = f"{base_path}{name}"
-                try:
-                    manifest_content = self.github_client.get_file_content(action.owner, action.repo, file_path, sha)
-                    self.cache.set(manifest_key, manifest_content)
-                    break
-                except Exception:
-                    continue
+            try:
+                manifest_content = self._fetch_manifest_content(action, sha, manifest_path)
+            except ManifestFetchError:
+                # Already logged with the status code. Not a missing manifest,
+                # so do not claim one.
+                return "", None
+            if manifest_content:
+                self.cache.set(manifest_key, manifest_content)
 
         if not manifest_content:
-            # Only log warning if both extensions failed
+            location = f"{action.owner}/{action.repo}"
             if manifest_path:
-                logger.error(
-                    f"Action manifest not found: {action.owner}/{action.repo}/{manifest_path} "
-                    f"(tried action.yml and action.yaml)"
-                )
-            else:
-                logger.error(
-                    f"Action manifest not found: {action.owner}/{action.repo} (tried action.yml and action.yaml)"
-                )
+                location = f"{location}/{manifest_path}"
+            logger.error(f"Action manifest not found: {location} (tried action.yml and action.yaml)")
             return action.canonical_key(), None
 
-        # Parse manifest
+        # Parse manifest straight from the fetched text — no temp file, so there
+        # is nothing to leak when parsing fails on a malformed upstream manifest.
         try:
-            # Write to temp file and parse
-            import tempfile
-
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
-                f.write(manifest_content)
-                temp_path = Path(f.name)
-
-            manifest = self.parser.parse_action(temp_path)
-            temp_path.unlink()
-
+            manifest = self.parser.parse_action_content(
+                manifest_content,
+                origin=f"{action.owner}/{action.repo}/{manifest_path or 'action.yml'}@{sha}",
+                default_name=action.repo,
+            )
             return action.canonical_key(), manifest
         except Exception as e:
             logger.error(f"Failed to parse manifest for {action.canonical_key()}: {e}")

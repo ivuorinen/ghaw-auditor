@@ -8,7 +8,7 @@ import pytest
 from ghaw_auditor.cache import Cache
 from ghaw_auditor.github_client import GitHubClient
 from ghaw_auditor.models import ActionRef, ActionType
-from ghaw_auditor.resolver import Resolver
+from ghaw_auditor.resolver import ManifestFetchError, Resolver
 
 
 @pytest.fixture
@@ -300,10 +300,19 @@ def test_resolve_github_action_missing_fields(mock_github_client: Mock, temp_cac
 
 
 def test_resolve_github_action_manifest_not_found(mock_github_client: Mock, temp_cache: Cache, tmp_path: Path) -> None:
-    """Test resolving GitHub action when manifest cannot be fetched."""
-    # Setup mock to fail fetching manifest
+    """Test resolving GitHub action when the manifest genuinely does not exist.
+
+    A real missing manifest is a 404 from raise_for_status. A bare Exception
+    would now be treated as a fetch failure, which is a different condition.
+    """
+    import httpx
+
+    not_found = Mock()
+    not_found.status_code = 404
     mock_github_client.get_ref_sha.return_value = "abc123"
-    mock_github_client.get_file_content.side_effect = Exception("404 Not Found")
+    mock_github_client.get_file_content.side_effect = httpx.HTTPStatusError(
+        "404 Not Found", request=Mock(), response=not_found
+    )
 
     resolver = Resolver(mock_github_client, temp_cache, tmp_path)
 
@@ -325,12 +334,18 @@ def test_resolve_github_action_manifest_not_found(mock_github_client: Mock, temp
 def test_resolve_monorepo_action_manifest_not_found(
     mock_github_client: Mock, temp_cache: Cache, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Test resolving monorepo action when manifest cannot be fetched."""
+    """Test resolving monorepo action when the manifest genuinely does not exist."""
     import logging
 
-    # Setup mock to fail fetching manifest for both .yml and .yaml
+    import httpx
+
+    # Both action.yml and action.yaml return a real 404.
+    not_found = Mock()
+    not_found.status_code = 404
     mock_github_client.get_ref_sha.return_value = "abc123"
-    mock_github_client.get_file_content.side_effect = Exception("404 Not Found")
+    mock_github_client.get_file_content.side_effect = httpx.HTTPStatusError(
+        "404 Not Found", request=Mock(), response=not_found
+    )
 
     resolver = Resolver(mock_github_client, temp_cache, tmp_path)
 
@@ -529,3 +544,118 @@ runs:
     assert key == "local:./my-action/action.yml"
     assert manifest is not None
     assert manifest.name == "File Path Action"
+
+
+def test_server_error_is_not_reported_as_a_missing_manifest(tmp_path: Path) -> None:
+    """A 5xx while fetching a manifest must not be mistaken for 'not found'.
+
+    The fallback loop caught bare Exception and moved on, so a server error or
+    an exhausted rate limit was reported as a missing action.yml — sending users
+    to look at the wrong repository.
+    """
+    import httpx
+
+    client = Mock()
+    response = Mock()
+    response.status_code = 503
+    client.get_file_content.side_effect = httpx.HTTPStatusError("boom", request=Mock(), response=response)
+
+    resolver = Resolver(
+        client, Mock(get=Mock(return_value=None), set=Mock(), make_key=Mock(return_value="k")), tmp_path
+    )
+    action = ActionRef(type=ActionType.GITHUB, owner="a", repo="b", ref="v1", source_file="w.yml")
+
+    with pytest.raises(ManifestFetchError):
+        resolver._fetch_manifest_content(action, "sha", "")
+    # Stops at the first non-404 instead of pointlessly trying action.yaml too.
+    assert client.get_file_content.call_count == 1
+
+
+def test_404_falls_back_to_action_yaml(tmp_path: Path) -> None:
+    """A genuine 404 on action.yml still tries action.yaml."""
+    import httpx
+
+    response = Mock()
+    response.status_code = 404
+    client = Mock()
+    client.get_file_content.side_effect = httpx.HTTPStatusError("nf", request=Mock(), response=response)
+
+    resolver = Resolver(
+        client, Mock(get=Mock(return_value=None), set=Mock(), make_key=Mock(return_value="k")), tmp_path
+    )
+    action = ActionRef(type=ActionType.GITHUB, owner="a", repo="b", ref="v1", source_file="w.yml")
+
+    assert resolver._fetch_manifest_content(action, "sha", "") is None
+    assert client.get_file_content.call_count == 2
+
+
+def test_non_http_error_while_fetching_is_logged_and_stops(tmp_path: Path) -> None:
+    """A transport-level failure aborts rather than masquerading as not-found."""
+    client = Mock()
+    client.get_file_content.side_effect = RuntimeError("socket exploded")
+
+    resolver = Resolver(
+        client, Mock(get=Mock(return_value=None), set=Mock(), make_key=Mock(return_value="k")), tmp_path
+    )
+    action = ActionRef(type=ActionType.GITHUB, owner="a", repo="b", ref="v1", source_file="w.yml")
+
+    with pytest.raises(ManifestFetchError):
+        resolver._fetch_manifest_content(action, "sha", "")
+    assert client.get_file_content.call_count == 1
+
+
+def test_resolve_github_action_does_not_claim_missing_manifest_on_503(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A 503 must not be reported as "Action manifest not found".
+
+    _fetch_manifest_content previously returned None for both "both filenames
+    404'd" and "the fetch failed", so the caller logged the missing-manifest
+    message after a server error -- sending users to inspect a repository that
+    is fine.
+    """
+    import logging
+
+    import httpx
+
+    response = Mock()
+    response.status_code = 503
+    client = Mock()
+    client.get_ref_sha.return_value = "a" * 40
+    client.get_file_content.side_effect = httpx.HTTPStatusError("boom", request=Mock(), response=response)
+
+    cache = Mock(get=Mock(return_value=None), set=Mock(), make_key=Mock(return_value="k"))
+    resolver = Resolver(client, cache, tmp_path)
+    action = ActionRef(type=ActionType.GITHUB, owner="a", repo="b", ref="v1", source_file="w.yml")
+
+    with caplog.at_level(logging.ERROR):
+        key, manifest = resolver._resolve_github_action(action)
+
+    assert manifest is None
+    assert "HTTP 503" in caplog.text
+    assert "manifest not found" not in caplog.text.lower()
+
+
+def test_resolve_github_action_reports_missing_manifest_on_double_404(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Both filenames 404 is the one case that *is* a missing manifest."""
+    import logging
+
+    import httpx
+
+    response = Mock()
+    response.status_code = 404
+    client = Mock()
+    client.get_ref_sha.return_value = "a" * 40
+    client.get_file_content.side_effect = httpx.HTTPStatusError("nf", request=Mock(), response=response)
+
+    cache = Mock(get=Mock(return_value=None), set=Mock(), make_key=Mock(return_value="k"))
+    resolver = Resolver(client, cache, tmp_path)
+    action = ActionRef(type=ActionType.GITHUB, owner="a", repo="b", ref="v1", source_file="w.yml")
+
+    with caplog.at_level(logging.ERROR):
+        _key, manifest = resolver._resolve_github_action(action)
+
+    assert manifest is None
+    assert "manifest not found" in caplog.text.lower()

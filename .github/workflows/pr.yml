@@ -21,7 +21,7 @@ jobs:
         run: uv run -m pytest --cov
 
       - name: Lint
-        run: uvx ruff check .
+        run: uv run ruff check .
 
       - name: Type check
         run: uv run mypy .

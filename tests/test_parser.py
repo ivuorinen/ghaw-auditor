@@ -293,10 +293,12 @@ def test_parse_permissions_dict() -> None:
 def test_parse_job_with_none_data() -> None:
     """Test parsing job with None data."""
     parser = Parser(Path.cwd())
-    job = parser._parse_job("test", None, Path("test.yml"), "")
+    job = parser._parse_job("test", None, Path("test.yml"))
 
     assert job.name == "test"
-    assert job.runs_on == "ubuntu-latest"  # default value
+    # No runs-on declared: record it as absent rather than inventing a runner,
+    # which would corrupt the runner inventory the report is built from.
+    assert job.runs_on == ""
 
 
 def test_parse_job_needs_string_vs_list() -> None:
@@ -304,11 +306,11 @@ def test_parse_job_needs_string_vs_list() -> None:
     parser = Parser(Path.cwd())
 
     # String needs
-    job1 = parser._parse_job("test", {"needs": "build"}, Path("test.yml"), "")
+    job1 = parser._parse_job("test", {"needs": "build"}, Path("test.yml"))
     assert job1.needs == ["build"]
 
     # List needs
-    job2 = parser._parse_job("test", {"needs": ["build", "lint"]}, Path("test.yml"), "")
+    job2 = parser._parse_job("test", {"needs": ["build", "lint"]}, Path("test.yml"))
     assert job2.needs == ["build", "lint"]
 
 
@@ -319,7 +321,6 @@ def test_parse_job_with_none_steps() -> None:
         "test",
         {"steps": [None, {"uses": "actions/checkout@v4"}]},
         Path("test.yml"),
-        "",
     )
 
     # Should skip None steps
@@ -670,3 +671,145 @@ jobs:
     assert workflow.env["BOOL_VAR"] is True
     assert workflow.env["NUMBER_VAR"] == 42
     assert workflow.env["FLOAT_VAR"] == 3.14
+
+
+def test_write_all_permissions_expand_to_write_on_every_scope() -> None:
+    """`permissions: write-all` must not collapse to an empty Permissions().
+
+    Returning a default Permissions() made the single most dangerous permission
+    declaration byte-identical to declaring none at all, so it vanished from
+    both the analysis counts and the rendered report.
+    """
+    parser = Parser(Path.cwd())
+    perms = parser._parse_permissions("write-all")
+
+    assert perms is not None
+    assert perms.contents == PermissionLevel.WRITE
+    assert perms.packages == PermissionLevel.WRITE
+    assert all(value == PermissionLevel.WRITE for value in perms.model_dump().values())
+
+
+def test_read_all_permissions_expand_to_read() -> None:
+    """`permissions: read-all` expands to read on every scope."""
+    perms = Parser(Path.cwd())._parse_permissions("read-all")
+
+    assert perms is not None
+    assert all(value == PermissionLevel.READ for value in perms.model_dump().values())
+
+
+def test_unknown_string_permission_is_not_silently_accepted() -> None:
+    """An unrecognized bare-string permission returns None rather than a lie."""
+    assert Parser(Path.cwd())._parse_permissions("bogus-value") is None
+
+
+def test_parse_action_content_handles_null_runs_block() -> None:
+    """An action manifest with `runs:` present but null must not crash.
+
+    data.get("runs", {}) returns None when the key exists with a null value,
+    and None.get raised AttributeError on third-party manifests.
+    """
+    manifest = Parser(Path.cwd()).parse_action_content("name: x\nruns:\n", origin="test", default_name="x")
+
+    assert manifest.name == "x"
+    assert manifest.is_composite is False
+    assert manifest.is_docker is False
+    assert manifest.is_javascript is False
+
+
+def test_reusable_workflow_declared_via_list_on_syntax() -> None:
+    """`on: [workflow_call]` is valid syntax and must not crash the parser.
+
+    The list form carries no inputs/outputs/secrets mapping, so the contract is
+    legitimately None — but the workflow is still reusable.
+    """
+    parser = Parser(Path.cwd())
+    path = FIXTURES_DIR / "basic-workflow.yml"
+    data = {"name": "wf", "on": ["workflow_call"], "jobs": {}}
+
+    triggers = parser._extract_triggers(data["on"])
+    assert "workflow_call" in triggers
+
+    # Exercise the full path through parse_workflow via a temp file.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "w.yml"
+        p.write_text("name: wf\non: [workflow_call]\njobs: {}\n")
+        workflow = Parser(Path(d)).parse_workflow(p)
+
+    assert workflow.is_reusable is True
+    assert workflow.reusable_contract is None
+    assert path.exists()  # fixtures dir still resolvable
+
+
+def test_action_inputs_and_outputs_ignore_non_mapping_entries() -> None:
+    """Scalar entries under inputs:/outputs: are skipped, not crashed on."""
+    manifest = Parser(Path.cwd()).parse_action_content(
+        "name: x\ninputs:\n  good:\n    description: ok\n  bad: just-a-string\n"
+        "outputs:\n  good:\n    description: ok\n  bad: just-a-string\n",
+        origin="test",
+        default_name="x",
+    )
+
+    assert set(manifest.inputs) == {"good"}
+    assert set(manifest.outputs) == {"good"}
+
+
+def test_hyphenated_permission_scopes_are_mapped_to_model_fields() -> None:
+    """GitHub Actions spells scopes with hyphens; the model uses snake_case.
+
+    Passing the hyphenated key straight to Permissions left it unmatched, and
+    pydantic drops unknown fields silently -- so `id-token: write` read as
+    "not granted". id-token is the OIDC scope, so that silence mattered.
+    """
+    perms = Parser(Path.cwd())._parse_permissions(
+        {
+            "contents": "read",
+            "id-token": "write",
+            "pull-requests": "write",
+            "security-events": "write",
+            "repository-projects": "read",
+        }
+    )
+
+    assert perms is not None
+    assert perms.contents == PermissionLevel.READ
+    assert perms.id_token == PermissionLevel.WRITE
+    assert perms.pull_requests == PermissionLevel.WRITE
+    assert perms.security_events == PermissionLevel.WRITE
+    assert perms.repository_projects == PermissionLevel.READ
+
+
+def test_snake_case_permission_scopes_still_work() -> None:
+    """The snake_case spelling keeps working after normalization."""
+    perms = Parser(Path.cwd())._parse_permissions({"id_token": "write"})
+
+    assert perms is not None
+    assert perms.id_token == PermissionLevel.WRITE
+
+
+def test_unknown_permission_scope_is_warned_not_silently_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unrecognized scope is reported rather than vanishing."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        perms = Parser(Path.cwd())._parse_permissions({"contents": "read", "not-a-scope": "write"})
+
+    assert perms is not None
+    assert perms.contents == PermissionLevel.READ
+    assert "not-a-scope" in caplog.text
+
+
+def test_permission_scope_with_no_value_is_skipped() -> None:
+    """`permissions:\\n  contents:` parses the scope as None and is skipped.
+
+    An empty value is not a level; treating it as one would raise on
+    PermissionLevel(None).
+    """
+    perms = Parser(Path.cwd())._parse_permissions({"contents": None, "issues": "write"})
+
+    assert perms is not None
+    assert perms.contents is None
+    assert perms.issues == PermissionLevel.WRITE

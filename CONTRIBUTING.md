@@ -21,11 +21,11 @@ uv run -m pytest -k test_name
 uv run -m pytest --cov --cov-report=html
 
 # Lint & format
-uvx ruff check .
-uvx ruff format .
+uv run ruff check .
+uv run ruff format .
 
 # Type check
-uvx mypy .
+uv run mypy .
 ```
 
 ## Code Style
@@ -39,7 +39,7 @@ uvx mypy .
 ## Testing
 
 - Write tests for new features
-- Maintain coverage ≥ 85%
+- Maintain 100% branch coverage (enforced: `--cov-branch --cov-fail-under=100`)
 - Use pytest fixtures
 - Mock external API calls
 

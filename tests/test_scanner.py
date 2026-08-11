@@ -203,3 +203,22 @@ def test_find_actions_monorepo_structure(tmp_path: Path) -> None:
     assert any("sync-labels" in str(a) for a in actions)
     assert any("deploy-action" in str(a) for a in actions)
     assert any("test-action" in str(a) for a in actions)
+
+
+def test_action_below_workflows_directory_is_not_reported(tmp_path: Path) -> None:
+    """An action.yml nested under .github/workflows/ is not a first-party action.
+
+    `continue` alone skipped only the workflows directory itself; os.walk still
+    descended into its children.
+    """
+    nested = tmp_path / ".github" / "workflows" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "action.yml").write_text("name: sneaky\n")
+
+    real = tmp_path / ".github" / "actions" / "real"
+    real.mkdir(parents=True)
+    (real / "action.yml").write_text("name: real\n")
+
+    found = {p.relative_to(tmp_path).as_posix() for p in Scanner(tmp_path).find_actions()}
+
+    assert found == {".github/actions/real/action.yml"}

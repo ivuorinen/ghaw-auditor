@@ -61,6 +61,9 @@ class GitHubClient:
         retry=retry_if_exception(should_retry_http_error),
         wait=wait_exponential(multiplier=1, min=2, max=30),
         stop=stop_after_attempt(3),
+        # Without reraise, tenacity wraps the final error in RetryError and the
+        # status code, URL and reason never reach the caller or the logs.
+        reraise=True,
     )
     def get_ref_sha(self, owner: str, repo: str, ref: str) -> str:
         """Resolve a ref (tag/branch) to a SHA."""
@@ -81,7 +84,9 @@ class GitHubClient:
                 logger.error(f"Access denied (check token permissions): {owner}/{repo}@{ref}")
             elif status_code == 401:
                 logger.error(f"Authentication required: {owner}/{repo}@{ref}")
-            elif 400 <= status_code < 600:
+            else:
+                # Reached only from raise_for_status, so the code is 4xx/5xx by
+                # construction; no range guard is needed.
                 logger.warning(f"HTTP {status_code} fetching {url}")
             raise
 
@@ -89,6 +94,9 @@ class GitHubClient:
         retry=retry_if_exception(should_retry_http_error),
         wait=wait_exponential(multiplier=1, min=2, max=30),
         stop=stop_after_attempt(3),
+        # Without reraise, tenacity wraps the final error in RetryError and the
+        # status code, URL and reason never reach the caller or the logs.
+        reraise=True,
     )
     def get_file_content(self, owner: str, repo: str, path: str, ref: str) -> str:
         """Fetch raw file content at a specific ref."""
@@ -111,7 +119,9 @@ class GitHubClient:
                 logger.error(f"Access denied (check token permissions): {owner}/{repo}/{path}")
             elif status_code == 401:
                 logger.error(f"Authentication required: {owner}/{repo}/{path}")
-            elif 400 <= status_code < 600:
+            else:
+                # Reached only from raise_for_status, so the code is 4xx/5xx by
+                # construction; no range guard is needed.
                 logger.warning(f"HTTP {status_code} fetching {raw_url}")
             raise
 

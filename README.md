@@ -37,7 +37,7 @@ GITHUB_TOKEN=ghp_xxx uvx ghaw-auditor scan --repo /path/to/repo
 uvx ghaw-auditor inventory --repo /path/to/repo
 
 # Validate against policy
-uvx ghaw-auditor validate --policy policy.yml --enforce
+uvx ghaw-auditor validate --policy-file policy.yml --enforce
 ```
 
 > **Note:** `uvx` runs the tool directly without installation.
@@ -87,13 +87,13 @@ uvx ghaw-auditor scan --repo .
 uvx ghaw-auditor scan \
   --repo . \
   --output .audit \
-  --format all \
+  --format-type all \
   --token $GITHUB_TOKEN \
   --concurrency 8 \
   --write-baseline
 
 # Offline mode (no API calls)
-uvx ghaw-auditor scan --offline --format md
+uvx ghaw-auditor scan --offline --format-type md
 ```
 
 **Options:**
@@ -101,11 +101,16 @@ uvx ghaw-auditor scan --offline --format md
 - `--repo <path>` - Repository path (default: `.`)
 - `--token <str>` - GitHub token (env: `GITHUB_TOKEN`)
 - `--output <dir>` - Output directory (default: `.ghaw-auditor`)
-- `--format <json|md|all>` - Output format (default: `all`)
+- `--format-type <json|md|all>` - Output format (default: `all`)
 - `--cache-dir <dir>` - Cache directory
 - `--offline` - Skip API resolution
 - `--concurrency <int>` - API concurrency (default: 4)
-- `--verbose`, `--quiet` - Logging levels
+- `--exclude <glob>` - Exclude paths from scanning (repeatable)
+- `--policy-file <file>` - Policy file path (YAML; see Policy Configuration)
+- `--enforce` - Exit 1 when any `error`-severity violation is found
+- `--diff`, `--baseline <dir>` - Compare against a baseline (see Diff Mode)
+- `--write-baseline` - Save the scan as a baseline
+- `--verbose`, `--quiet`, `--log-json` - Logging levels and format
 
 ### `inventory` - List Actions
 
@@ -130,13 +135,23 @@ Validate workflows against policies.
 uvx ghaw-auditor validate --repo .
 
 # Validate with custom policy
-uvx ghaw-auditor validate --policy policy.yml --enforce
+uvx ghaw-auditor validate --policy-file policy.yml --enforce
 ```
 
 **Options:**
 
-- `--policy <file>` - Policy file path
-- `--enforce` - Exit non-zero on violations
+- `--repo <path>` - Repository path (default: `.`)
+- `--policy-file <file>` - Policy file path (YAML; see Policy Configuration)
+- `--enforce` - Exit 1 when any `error`-severity violation is found
+- `--verbose` - Verbose output
+
+**Exit codes:**
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Completed; no enforced violations |
+| 1 | Policy enforcement failed, repository not found, or baseline missing |
+| 2 | Unexpected error, or invalid command-line usage |
 
 ## Diff Mode
 
@@ -224,20 +239,30 @@ min_permissions: true             # Enforce least-privilege
 
 **Policy rules:**
 
-- `require_pinned_actions` - Actions must be pinned to SHA (not tags/branches)
-- `forbid_branch_refs` - Forbid branch references (main, master, develop)
-- `allowed_actions` - Whitelist of allowed actions (glob patterns)
-- `denied_actions` - Blacklist of forbidden actions
+- `min_permissions` - Flag `write-all` (error) and workflows that declare no
+  permissions at all (warning, since the token inherits the repository default)
+- `require_pinned_actions` - Actions must be pinned to a full SHA (40-char
+  SHA-1 or 64-char SHA-256, either case). Applies to reusable workflow calls too
+- `forbid_branch_refs` - Forbid branch references (main, master, develop, dev).
+  Applies to reusable workflow calls too
+- `allowed_actions` - Whitelist of allowed actions (glob patterns: `*`, `?`, `[seq]`)
+- `denied_actions` - Blacklist of forbidden actions (same glob syntax)
 - `require_concurrency_on_pr` - PR workflows must set concurrency groups
+
+The four action-level rules — `require_pinned_actions`, `forbid_branch_refs`,
+`allowed_actions` and `denied_actions` — apply to both `owner/repo@ref` actions
+and `owner/repo/.github/workflows/wf.yml@ref` reusable workflow calls.
+`min_permissions` and `require_concurrency_on_pr` are workflow-level rules and
+have no per-action form.
 
 **Enforcement:**
 
 ```bash
 # Warn on violations
-uvx ghaw-auditor validate --policy policy.yml
+uvx ghaw-auditor validate --policy-file policy.yml
 
 # Fail CI on violations
-uvx ghaw-auditor validate --policy policy.yml --enforce
+uvx ghaw-auditor validate --policy-file policy.yml --enforce
 # Exit code: 0 (pass), 1 (violations), 2 (error)
 ```
 
@@ -311,13 +336,13 @@ uv run ghaw-auditor scan --repo .
 uv run -m pytest
 
 # Lint
-uvx ruff check .
+uv run ruff check .
 
 # Format
-uvx ruff format .
+uv run ruff format .
 
 # Type check
-uvx mypy .
+uv run mypy .
 
 # Coverage
 uv run -m pytest --cov --cov-report=html
@@ -331,7 +356,7 @@ uv run -m pytest --cov --cov-report=html
 - name: Audit GitHub Actions
   run: |
     uvx ghaw-auditor scan --output audit-results
-    uvx ghaw-auditor validate --policy policy.yml --enforce
+    uvx ghaw-auditor validate --policy-file policy.yml --enforce
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -470,7 +495,7 @@ MIT
 Contributions welcome! Please ensure:
 
 - Tests pass: `uv run -m pytest`
-- Code formatted: `uvx ruff format .`
-- Linting clean: `uvx ruff check .`
-- Type hints valid: `uvx mypy .`
-- Coverage ≥ 85%
+- Code formatted: `uv run ruff format .`
+- Linting clean: `uv run ruff check .`
+- Type hints valid: `uv run mypy .`
+- Coverage: 100% branch (enforced by `pytest`)

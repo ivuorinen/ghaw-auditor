@@ -109,6 +109,9 @@ class Renderer:
                 f.write(f"- `{runner}`: {count}\n")
             f.write("\n")
 
+        if "actions" in analysis:
+            self._write_actions_analysis(f, analysis["actions"])
+
         if "secrets" in analysis:
             f.write("\n### Secrets\n\n")
             f.write(f"Total unique secrets: {analysis['secrets'].get('total_unique_secrets', 0)}\n\n")
@@ -117,6 +120,18 @@ class Renderer:
                 for secret in sorted(secrets):
                     f.write(f"- `{secret}`\n")
                 f.write("\n")
+
+    def _write_actions_analysis(self, f: Any, actions_analysis: dict[str, Any]) -> None:
+        """Write the resolved-action statistics subsection."""
+        f.write("\n### Resolved Actions\n\n")
+        f.write(f"- **Total resolved:** {actions_analysis.get('total_resolved', 0)}\n")
+        f.write(f"- **Composite:** {actions_analysis.get('composite', 0)}\n")
+        f.write(f"- **Docker:** {actions_analysis.get('docker', 0)}\n")
+        f.write(f"- **JavaScript:** {actions_analysis.get('javascript', 0)}\n")
+        missing = actions_analysis.get("missing_description", [])
+        if missing:
+            f.write(f"- **Missing description:** {len(missing)}\n")
+        f.write("\n")
 
     def _write_job_details(self, f: Any, job_name: str, job: Any) -> None:
         """Write job details to markdown file."""

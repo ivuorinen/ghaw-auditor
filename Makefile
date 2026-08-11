@@ -1,4 +1,4 @@
-.PHONY: help install test lint format check clean audit
+.PHONY: help install test lint format typecheck check clean audit
 
 help:
 	@echo "Available targets:"
@@ -18,13 +18,13 @@ test:
 	uv run -m pytest -v --cov=ghaw_auditor --cov-report=term-missing
 
 lint:
-	uvx ruff check .
+	uv run ruff check .
 
 format:
-	uvx ruff format .
+	uv run ruff format .
 
 typecheck:
-	uvx mypy .
+	uv run mypy .
 
 check: lint format typecheck test
 

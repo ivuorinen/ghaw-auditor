@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,26 @@ class Scanner:
         ".github/actions/*/action.yml",
         ".github/actions/*/action.yaml",
     ]
+
+    # Never descended into: these hold no first-party actions and contain the
+    # vast majority of a checkout's directory entries.
+    SKIP_DIRS = frozenset(
+        {
+            ".git",
+            ".venv",
+            "venv",
+            "node_modules",
+            "__pycache__",
+            ".tox",
+            ".nox",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            "dist",
+            "build",
+            "site-packages",
+        }
+    )
 
     def __init__(self, repo_path: str | Path, exclude_patterns: list[str] | None = None) -> None:
         """Initialize scanner."""
@@ -60,24 +81,30 @@ class Scanner:
 
         Excludes .github/workflows directory to avoid false positives.
         """
-        actions = []
+        actions: set[Path] = set()
+        workflows_dir = self.repo_path / ".github" / "workflows"
 
-        # Check .github/actions directory
-        actions_dir = self.repo_path / ".github" / "actions"
-        if actions_dir.exists():
-            for action_file in actions_dir.rglob("action.y*ml"):
-                if action_file.name in ("action.yml", "action.yaml") and not self._should_exclude(action_file):
-                    actions.append(action_file)
-                    logger.debug(f"Found action: {action_file.relative_to(self.repo_path)}")
+        # os.walk (not rglob) so SKIP_DIRS can be pruned in place: rglob has no
+        # way to avoid descending into .git / node_modules / .venv, which both
+        # dominates scan time and surfaces vendored third-party action.yml files
+        # as if they belonged to this repository.
+        for dirpath, dirnames, filenames in os.walk(self.repo_path):
+            dirnames[:] = [d for d in dirnames if d not in self.SKIP_DIRS]
+            current_dir = Path(dirpath)
 
-        # Check for action files in root and subdirectories (supports monorepo structure)
-        for name in ("action.yml", "action.yaml"):
-            for action_file in self.repo_path.rglob(name):
-                # Skip if in .github/workflows
-                if ".github/workflows" in str(action_file.relative_to(self.repo_path)):
+            if current_dir == workflows_dir:
+                # Clear dirnames too: `continue` alone skips only this directory,
+                # and os.walk would still descend into its children, reporting an
+                # action.yml under .github/workflows/*/ as a first-party action.
+                dirnames.clear()
+                continue
+
+            for name in ("action.yml", "action.yaml"):
+                if name not in filenames:
                     continue
-                if not self._should_exclude(action_file) and action_file not in actions:
-                    actions.append(action_file)
+                action_file = current_dir / name
+                if not self._should_exclude(action_file):
+                    actions.add(action_file)
                     logger.debug(f"Found action: {action_file.relative_to(self.repo_path)}")
 
         logger.info(f"Found {len(actions)} action files")

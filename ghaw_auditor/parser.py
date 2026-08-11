@@ -74,7 +74,7 @@ class Parser:
         jobs_data = data.get("jobs")
         if jobs_data:
             for job_name, job_data in jobs_data.items():
-                job_meta = self._parse_job(job_name, job_data, path, content)
+                job_meta = self._parse_job(job_name, job_data, path)
                 jobs[job_name] = job_meta
                 secrets_used.update(job_meta.secrets_used)
                 actions_used.extend(job_meta.actions_used)
@@ -104,18 +104,51 @@ class Parser:
             return list(on_data.keys())
         return []
 
+    # Bare-string permission forms expand across every scope. Expanding (rather
+    # than recording a flag) keeps analyzer/renderer/policy correct unchanged.
+    _GLOBAL_PERMISSIONS = {
+        "write-all": PermissionLevel.WRITE,
+        "read-all": PermissionLevel.READ,
+        "none": PermissionLevel.NONE,
+    }
+
     def _parse_permissions(self, perms: Any) -> Permissions | None:
         """Parse permissions."""
         if perms is None:
             return None
         if isinstance(perms, str):
-            # Global read-all or write-all
-            return Permissions()
+            level = self._GLOBAL_PERMISSIONS.get(perms)
+            if level is None:
+                logger.warning(f"Unrecognized permissions value: {perms!r}")
+                return None
+            return Permissions(**dict.fromkeys(Permissions.model_fields, level))
         if isinstance(perms, dict):
-            return Permissions(**{k: PermissionLevel(v) for k, v in perms.items() if v})
+            return Permissions(**self._normalize_permission_scopes(perms))
         return None
 
-    def _parse_job(self, name: str, data: dict[str, Any] | None, path: Path, content: str) -> JobMeta:
+    def _normalize_permission_scopes(self, perms: dict[Any, Any]) -> dict[str, PermissionLevel]:
+        """Map GitHub Actions permission keys onto Permissions field names.
+
+        Actions spells these scopes with hyphens (`id-token`, `pull-requests`,
+        `security-events`, `repository-projects`) while the model uses
+        snake_case. Passing the hyphenated key straight through leaves it
+        unmatched, and pydantic drops unknown fields silently -- so
+        `id-token: write` would read as "not granted".
+        """
+        scopes: dict[str, PermissionLevel] = {}
+
+        for key, value in perms.items():
+            if not value:
+                continue
+            field = str(key).replace("-", "_")
+            if field not in Permissions.model_fields:
+                logger.warning(f"Unrecognized permission scope: {key!r}")
+                continue
+            scopes[field] = PermissionLevel(value)
+
+        return scopes
+
+    def _parse_job(self, name: str, data: dict[str, Any] | None, path: Path) -> JobMeta:
         """Parse a job."""
         if data is None:
             data = {}
@@ -124,8 +157,14 @@ class Parser:
         uses = data.get("uses")
         is_reusable_call = uses is not None
 
-        # runs-on is optional for reusable workflow calls
-        runs_on = data.get("runs-on", "ubuntu-latest" if not is_reusable_call else "")
+        # runs-on is optional for reusable workflow calls. Never invent a value:
+        # a non-call job without runs-on is an invalid workflow, and recording a
+        # fabricated "ubuntu-latest" would corrupt the runner inventory.
+        runs_on = data.get("runs-on")
+        if runs_on is None:
+            if not is_reusable_call:
+                logger.warning(f"Job '{name}' in {path} declares no runs-on")
+            runs_on = ""
 
         needs = data.get("needs", [])
         if isinstance(needs, str):
@@ -145,33 +184,13 @@ class Parser:
         outputs = data.get("outputs", {})
 
         # Parse secrets for reusable workflows
-        secrets_passed = None
-        inherit_secrets = False
-        secrets_data = data.get("secrets")
-        if secrets_data == "inherit":
-            inherit_secrets = True
-        elif isinstance(secrets_data, dict):
-            secrets_passed = secrets_data
+        secrets_passed, inherit_secrets = self._parse_job_secrets(data.get("secrets"))
 
         # Extract actions from steps or reusable workflow
-        actions_used: list[ActionRef] = []
-        secrets_used: set[str] = set()
-
-        if is_reusable_call and isinstance(uses, str):
-            # Parse reusable workflow reference
-            workflow_ref = self._parse_reusable_workflow_ref(uses, path)
-            actions_used.append(workflow_ref)
-        else:
-            # Parse actions from steps
-            for step in data.get("steps", []):
-                if step is None:
-                    continue
-                if "uses" in step:
-                    action_ref = self._parse_action_ref(step["uses"], path)
-                    actions_used.append(action_ref)
+        actions_used = self._extract_job_actions(data, uses, is_reusable_call, path)
 
         # Extract secrets from entire job content
-        secrets_used.update(self._extract_secrets(str(data)))
+        secrets_used: set[str] = set(self._extract_secrets(str(data)))
 
         job_data = {
             "name": name,
@@ -200,6 +219,29 @@ class Parser:
             job_data["if"] = data.get("if")
 
         return JobMeta(**job_data)
+
+    def _parse_job_secrets(self, secrets_data: Any) -> tuple[dict[str, str] | None, bool]:
+        """Split a job's `secrets:` value into (explicit mapping, inherit flag)."""
+        if secrets_data == "inherit":
+            return None, True
+        if isinstance(secrets_data, dict):
+            return secrets_data, False
+        return None, False
+
+    def _extract_job_actions(
+        self, data: dict[str, Any], uses: Any, is_reusable_call: bool, path: Path
+    ) -> list[ActionRef]:
+        """Collect every action reference a job makes."""
+        if is_reusable_call and isinstance(uses, str):
+            return [self._parse_reusable_workflow_ref(uses, path)]
+
+        actions_used: list[ActionRef] = []
+        for step in data.get("steps") or []:
+            if step is None:
+                continue
+            if "uses" in step:
+                actions_used.append(self._parse_action_ref(step["uses"], path))
+        return actions_used
 
     def _parse_action_ref(self, uses: str, source_file: Path) -> ActionRef:
         """Parse a 'uses' string into ActionRef."""
@@ -324,12 +366,22 @@ class Parser:
     def parse_action(self, path: Path) -> ActionManifest:
         """Parse an action.yml file."""
         with open(path, encoding="utf-8") as f:
-            data = self.yaml.load(f)
+            content = f.read()
+
+        return self.parse_action_content(content, origin=str(path), default_name=path.parent.name)
+
+    def parse_action_content(self, content: str, origin: str, default_name: str = "") -> ActionManifest:
+        """Parse action manifest YAML from a string.
+
+        Lets remotely-fetched manifests be parsed without a temp file.
+        ``origin`` is used only for error messages.
+        """
+        data = self.yaml.load(content)
 
         if not data:
-            raise ValueError(f"Empty action file: {path}")
+            raise ValueError(f"Empty action file: {origin}")
 
-        name = data.get("name", path.parent.name)
+        name = data.get("name", default_name)
         description = data.get("description")
         author = data.get("author")
 
@@ -353,11 +405,13 @@ class Parser:
                     description=output_data.get("description"),
                 )
 
-        # Parse runs
-        runs = data.get("runs", {})
-        is_composite = runs.get("using") == "composite"
-        is_docker = runs.get("using") in ("docker", "Dockerfile")
-        is_javascript = runs.get("using", "").startswith("node")
+        # Parse runs. `or {}` / `or ""` rather than dict.get defaults: a key that
+        # is present but null yields None, which .get would happily return.
+        runs = data.get("runs") or {}
+        using = runs.get("using") or ""
+        is_composite = using == "composite"
+        is_docker = using in ("docker", "Dockerfile")
+        is_javascript = using.startswith("node")
 
         return ActionManifest(
             name=name,
